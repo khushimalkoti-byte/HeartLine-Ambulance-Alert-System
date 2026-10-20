@@ -23,7 +23,30 @@ HeartLine is a web-based prototype designed to support ambulance route guidance 
 This is a prototype. Demo obstacles and simulated alerts should not be interpreted as live traffic or production ambulance dispatch integration.
 
 ## Setup
-Setup instructions and dependencies will be documented after verifying the backend imports and configuration.
+
+### Requirements
+- Python 3.10 or newer
+- pip
+
+### Run the Python backend
+
+1. Clone or download this repository.
+2. Open a terminal in the project folder.
+3. Install the Python dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Start the FastAPI server:
+
+   ```bash
+   uvicorn main:app --reload
+   ```
+
+5. Open `http://127.0.0.1:8000` in your browser.
+
+**Note:** The Node.js/TinyFish hospital-research feature requires a separate Node.js environment and configuration. It is not included in the Python startup steps.
 
 ## Team
 **5ive Minds — IGDTUW**
