@@ -25,3 +25,7 @@ Setup instructions and dependencies will be documented after verifying the backe
 
 ## Team
 **5ive Minds — IGDTUW**
+
+## HeartLine Demo Video
+
+[▶ Watch our HeartLine Prototype Demo](https://drive.google.com/file/d/16H6wowPwdFX23E0EUilDycJc4zJxM3Dn/view?usp=drivesdk)
