@@ -1,0 +1,654 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HeartLine - Ambulance Guidance</title>
+
+    <link rel="stylesheet" href="style.css">
+
+    <!-- Free Leaflet map library -->
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+</head>
+<body>
+    <header>
+        <h1>🚑 HeartLine</h1>
+        <p>Ambulance Route Guidance Prototype</p>
+    </header>
+
+    <main id="container">
+        <aside id="sidebar">
+            <section class="section">
+                <h2>Route Points</h2>
+
+                <label for="start">Starting Point</label>
+                <input id="start" type="text" placeholder="Enter starting location">
+
+                <label for="end">Destination</label>
+                <input id="end" type="text" placeholder="Enter destination">
+
+                <button onclick="calculateRoute()">Calculate Route</button>
+                <div id="routeInfo">Your route will appear here.</div>
+            </section>
+
+            <section class="section">
+                <h2>Obstacles</h2>
+                <button onclick="addObstacle()">Add Demo Obstacle</button>
+                <ul id="obstacleList"></ul>
+            </section>
+
+            
+<section class="section">
+    <h2>Ambulance Operator Panel</h2>
+
+    <label for="alertArea">Approaching Road / Area</label>
+
+    <input
+        type="text"
+        id="alertArea"
+        placeholder="Example: Delhi Road, Rohtak"
+    >
+
+    <button onclick="activateAmbulanceAlert()">
+        🚑 Activate Ambulance Alert
+    </button>
+
+    <div id="operatorStatus">
+        No alert activated.
+    </div>
+</section>
+
+<section class="section">
+    <h2>Public Notifications</h2>
+
+    <div id="connectionStatus">
+        Connecting to HeartLine...
+    </div>
+
+    <button onclick="enableNotifications()">
+        Enable Browser Notifications
+    </button>
+
+    <div id="notification">
+        No new alerts.
+    </div>
+
+    <button onclick="acknowledgeAlert()">
+        I Have Seen This Alert
+    </button>
+</section>
+
+        </aside>
+
+        <section id="map" aria-label="Map"></section>
+    </main>
+
+    <!-- Leaflet library -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        const API_BASE = "http://127.0.0.1:8000";
+
+        let map;
+        let routeLayer;
+        let obstacleMarkers = [];
+        
+        const OBSTACLE_WARNING_DISTANCE = 300; // metres
+        window.heartLineObstacles = [];
+
+        function initMap() {
+    map = L.map("map").setView([28.6139, 77.2090], 12);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    loadObstacles();
+    connectAlertSocket();
+}
+
+function displayObstacle(obstacle) {
+    const marker = L.marker([
+        obstacle.latitude,
+        obstacle.longitude
+    ]).addTo(map);
+
+    marker.bindPopup("⚠️ " + obstacle.description);
+    obstacleMarkers.push(marker);
+
+    window.heartLineObstacles.push(obstacle);
+
+    const item = document.createElement("li");
+    item.textContent = obstacle.description;
+    document.getElementById("obstacleList").appendChild(item);
+}
+
+// Calculate the distance between two geographical points in metres.
+function getDistance(lat1, lon1, lat2, lon2) {
+    const earthRadius = 6371000;
+
+    const toRadians = value => value * Math.PI / 180;
+
+    const dLat = toRadians(lat2 - lat1);
+    const dLon = toRadians(lon2 - lon1);
+
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRadians(lat1)) *
+        Math.cos(toRadians(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+
+    return 2 * earthRadius *
+        Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+
+// Find the shortest distance from an obstacle to a route segment.
+function distanceToSegment(point, start, end) {
+    const latitude = point[1];
+    const radians = Math.PI / 180;
+
+    // Convert coordinates to local metre-based coordinates.
+    const scaleX = 111320 * Math.cos(latitude * radians);
+    const scaleY = 110540;
+
+    const px = point[0] * scaleX;
+    const py = point[1] * scaleY;
+
+    const ax = start[0] * scaleX;
+    const ay = start[1] * scaleY;
+
+    const bx = end[0] * scaleX;
+    const by = end[1] * scaleY;
+
+    const dx = bx - ax;
+    const dy = by - ay;
+
+    const lengthSquared = dx * dx + dy * dy;
+
+    if (lengthSquared === 0) {
+        return Math.hypot(px - ax, py - ay);
+    }
+
+    let t = ((px - ax) * dx + (py - ay) * dy)
+        / lengthSquared;
+
+    t = Math.max(0, Math.min(1, t));
+
+    const nearestX = ax + t * dx;
+    const nearestY = ay + t * dy;
+
+    return Math.hypot(px - nearestX, py - nearestY);
+}
+
+
+// Find obstacles within the warning distance of the route.
+function checkObstaclesNearRoute(routeGeometry) {
+    const routeCoordinates = routeGeometry.coordinates;
+
+    const nearbyObstacles = [];
+
+    const warningDistance = OBSTACLE_WARNING_DISTANCE;
+
+    obstaclesForRouteCheck: for (const markerData of window.heartLineObstacles || []) {
+        const obstaclePoint = [
+            markerData.longitude,
+            markerData.latitude
+        ];
+
+        let minimumDistance = Infinity;
+
+        for (let i = 0; i < routeCoordinates.length - 1; i++) {
+            const distance = distanceToSegment(
+                obstaclePoint,
+                routeCoordinates[i],
+                routeCoordinates[i + 1]
+            );
+
+            minimumDistance = Math.min(minimumDistance, distance);
+
+            if (minimumDistance <= warningDistance) {
+                break;
+            }
+        }
+
+        if (minimumDistance <= warningDistance) {
+            nearbyObstacles.push({
+                description: markerData.description,
+                distance: Math.round(minimumDistance)
+            });
+        }
+    }
+
+    return nearbyObstacles;
+}
+
+
+// Display obstacle warnings after route calculation.
+function showRouteObstacleWarnings(routeGeometry) {
+    const nearby = checkObstaclesNearRoute(routeGeometry);
+    const notification = document.getElementById("notification");
+
+    if (nearby.length === 0) {
+        notification.textContent =
+            "No recorded demo obstacles detected within 300 metres of this route.";
+        notification.className = "safe-message";
+        return 0;
+    }
+
+    const warningText = nearby.map(item =>
+        `${item.description} (${item.distance} m from route)`
+    );
+
+    notification.textContent =
+        `Warning: ${nearby.length} recorded obstacle(s) near this route. ` +
+        warningText.join("; ");
+
+    notification.className = "warning-message";
+
+    return nearby.length;
+}
+
+function chooseBestRoute(routes) {
+    if (!routes || routes.length === 0) {
+        throw new Error("No routes are available.");
+    }
+
+    // Score every available route.
+    const evaluatedRoutes = routes.map((route, index) => {
+        const nearbyObstacles = checkObstaclesNearRoute(
+            route.geometry
+        );
+
+        return {
+            route: route,
+            index: index,
+            obstacleCount: nearbyObstacles.length,
+            nearbyObstacles: nearbyObstacles,
+            distance: route.distance
+        };
+    });
+
+    // Prefer fewer nearby obstacles.
+    // If equal, prefer the shorter route.
+    evaluatedRoutes.sort((a, b) => {
+        if (a.obstacleCount !== b.obstacleCount) {
+            return a.obstacleCount - b.obstacleCount;
+        }
+
+        return a.distance - b.distance;
+    });
+
+    return evaluatedRoutes[0];
+}
+
+
+
+async function loadObstacles() {
+    try {
+        const response = await fetch(API_BASE + "/obstacles");
+
+        if (!response.ok) {
+            throw new Error("Could not load obstacles.");
+        }
+
+        const data = await response.json();
+
+        document.getElementById("obstacleList").innerHTML = "";
+
+        obstacleMarkers.forEach(marker => map.removeLayer(marker));
+        obstacleMarkers = [];
+        window.heartLineObstacles = [];
+
+        data.obstacles.forEach(displayObstacle);
+
+    } catch (error) {
+        console.error("Obstacle loading error:", error);
+    }
+}
+
+        async function findLocation(place) {
+            const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q="
+                + encodeURIComponent(place);
+
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error("Location search failed.");
+            }
+
+            const results = await response.json();
+
+            if (results.length === 0) {
+                throw new Error("Could not find: " + place);
+            }
+
+            return [
+                Number(results[0].lat),
+                Number(results[0].lon)
+            ];
+        }
+
+        
+
+        async function calculateRoute() {
+            const start = document.getElementById("start").value.trim();
+            const end = document.getElementById("end").value.trim();
+            const info = document.getElementById("routeInfo");
+
+            if (!start || !end) {
+                info.textContent = "Please enter both locations.";
+                return;
+            }
+
+            info.textContent = "Finding locations and calculating route...";
+
+            try {
+                // Send the route request to your FastAPI backend.
+                const backendResponse = await fetch(API_BASE + "/calculate-route", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        start: start,
+                        destination: end
+                    })
+                });
+
+                if (!backendResponse.ok) {
+                    throw new Error("Backend route request failed.");
+                }
+
+                const startPoint = await findLocation(start);
+
+                // Wait briefly before the next geocoding request.
+                await new Promise(resolve => setTimeout(resolve, 1100));
+
+                const endPoint = await findLocation(end);
+
+                // OSRM expects longitude,latitude.
+                
+const routeUrl =
+    `https://router.project-osrm.org/route/v1/driving/` +
+    `${startPoint[1]},${startPoint[0]};${endPoint[1]},${endPoint[0]}` +
+    "?overview=full&geometries=geojson&alternatives=true";
+
+
+                const routeResponse = await fetch(routeUrl);
+
+                if (!routeResponse.ok) {
+                    throw new Error("Routing service is unavailable.");
+                }
+
+               
+const routeData = await routeResponse.json();
+
+if (routeData.code !== "Ok" ||
+    !routeData.routes ||
+    routeData.routes.length === 0) {
+    throw new Error("No route was found.");
+}
+
+// Choose the route with the fewest nearby obstacles.
+const selected = chooseBestRoute(routeData.routes);
+const bestRoute = selected.route;
+
+// Remove the previous route from the map.
+if (routeLayer) {
+    map.removeLayer(routeLayer);
+}
+
+// Display the selected route.
+routeLayer = L.geoJSON(bestRoute.geometry, {
+    style: {
+        color: "#20c997",
+        weight: 6,
+        opacity: 0.9
+    }
+}).addTo(map);
+
+map.fitBounds(routeLayer.getBounds(), {
+    padding: [30, 30]
+});
+
+// Calculate route information.
+const distance = (bestRoute.distance / 1000).toFixed(2);
+const duration = Math.round(bestRoute.duration / 60);
+
+// Display warnings for the selected route.
+const nearbyCount = showRouteObstacleWarnings(
+    bestRoute.geometry
+);
+
+const routeNumber = selected.index + 1;
+
+info.textContent =
+    `Selected route: ${routeNumber} of ${routeData.routes.length} | ` +
+    `Distance: ${distance} km | ` +
+    `Estimated time: ${duration} minutes | ` +
+    `Nearby obstacles: ${nearbyCount}`;
+
+            } catch (error) {
+                info.textContent = error.message;
+            }
+        }
+
+        async function addObstacle() {
+            const center = map.getCenter();
+
+            // Place a demo obstacle near the current map centre.
+            const latitude = center.lat + (Math.random() - 0.5) * 0.02;
+            const longitude = center.lng + (Math.random() - 0.5) * 0.02;
+
+            try {
+                const response = await fetch(API_BASE + "/add-obstacle", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        latitude: latitude,
+                        longitude: longitude,
+                        description: "Demo road obstacle"
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error("Could not add obstacle.");
+                }
+
+                const data = await response.json();
+                const obstacle = data.obstacle;
+
+                const marker = L.marker([
+                    obstacle.latitude,
+                    obstacle.longitude
+                ]).addTo(map);
+
+                marker.bindPopup("⚠️ " + obstacle.description);
+                obstacleMarkers.push(marker);
+
+                const item = document.createElement("li");
+                item.textContent = obstacle.description;
+                document.getElementById("obstacleList").appendChild(item);
+
+            } catch (error) {
+                document.getElementById("notification").textContent = error.message;
+            }
+        }
+
+        async function simulateAmbulance() {
+            const notification = document.getElementById("notification");
+
+            try {
+                const response = await fetch(API_BASE + "/ambulance-alert");
+
+                if (!response.ok) {
+                    throw new Error("Could not get ambulance alert.");
+                }
+
+                const data = await response.json();
+                notification.textContent = data.alert + " " + data.message;
+            } catch (error) {
+                notification.textContent = error.message;
+            }
+        }
+
+        window.onload = initMap;
+
+let alertSocket = null;
+let lastAlertTime = null;
+
+
+// Connect the website to the FastAPI WebSocket.
+function connectAlertSocket() {
+    const status = document.getElementById("connectionStatus");
+
+    alertSocket = new WebSocket("ws://127.0.0.1:8000/ws/alerts");
+
+    alertSocket.onopen = function () {
+        status.textContent = "Connected to HeartLine alerts.";
+        alertSocket.send("ready");
+    };
+
+    alertSocket.onmessage = function (event) {
+        const message = JSON.parse(event.data);
+
+        if (message.type === "ambulance_alert") {
+            showAmbulanceNotification(message.data);
+        }
+    };
+
+    alertSocket.onerror = function () {
+        status.textContent = "Alert connection error.";
+    };
+
+    alertSocket.onclose = function () {
+        status.textContent =
+            "Disconnected. Refresh the page to reconnect.";
+    };
+}
+
+
+// Display an ambulance alert to the public user.
+function showAmbulanceNotification(alertData) {
+    const notification = document.getElementById("notification");
+
+    notification.textContent =
+        alertData.alert + " " + alertData.message;
+
+    notification.className = "warning-message";
+
+    lastAlertTime = alertData.time;
+
+    // Send a browser notification if permission was granted.
+    if ("Notification" in window &&
+        Notification.permission === "granted") {
+
+        new Notification("HeartLine - Ambulance Alert", {
+            body: alertData.message,
+            icon: ""
+        });
+    }
+}
+
+
+// Ask the user for browser notification permission.
+async function enableNotifications() {
+    const status = document.getElementById("connectionStatus");
+
+    if (!("Notification" in window)) {
+        status.textContent =
+            "Browser notifications are not supported.";
+        return;
+    }
+
+    const permission = await Notification.requestPermission();
+
+    if (permission === "granted") {
+        status.textContent =
+            "Browser notifications enabled.";
+    } else {
+        status.textContent =
+            "Browser notification permission was not granted.";
+    }
+}
+
+
+// Activate an ambulance alert from the operator panel.
+async function activateAmbulanceAlert() {
+    const area = document.getElementById("alertArea").value.trim();
+    const status = document.getElementById("operatorStatus");
+
+    if (!area) {
+        status.textContent = "Please enter the approaching road or area.";
+        return;
+    }
+
+    status.textContent = "Sending alert...";
+
+    try {
+        const response = await fetch(API_BASE + "/activate-alert", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                road_or_area: area
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.detail || "Could not send alert.");
+        }
+
+        status.textContent =
+            "Alert sent successfully to " +
+            data.connected_users +
+            " connected HeartLine user(s).";
+
+    } catch (error) {
+        status.textContent = error.message;
+    }
+}
+
+
+// Let the user acknowledge the notification.
+function acknowledgeAlert() {
+    const notification = document.getElementById("notification");
+
+    if (!lastAlertTime) {
+        notification.textContent = "There is no alert to acknowledge.";
+        return;
+    }
+
+    notification.textContent =
+        "You have acknowledged the ambulance alert. Please give way safely.";
+
+    notification.className = "safe-message";
+}
+async function findHospital() {
+  const response = await fetch(
+    "http://localhost:3000/api/hospitals",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        hospitalName: "Hospital Name",
+        website: "https://example.com"
+      })
+    }
+  );
+
+  const data = await response.json();
+  console.log(data);
+}
+
+    </script>
+</body>
+</html>
