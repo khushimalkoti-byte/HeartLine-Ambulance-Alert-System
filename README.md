@@ -2,7 +2,9 @@
 
 ## About
 HeartLine is a web-based prototype designed to support ambulance route guidance and browser-based alerts for connected users.
+## Project Presentation
 
+[View HeartLine Presentation (PDF)](HeartLine — Smart Ambulance Routing & Traffic Alert System (1) (1).pdf)
 ## Features
 - Calculate routes between an origin and destination.
 - Display routes on an interactive map.
